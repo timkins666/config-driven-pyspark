@@ -41,4 +41,3 @@ def test_flatten_schema(spark):
         "pets[].face.nose",
         "pets[].name",
     ]
-

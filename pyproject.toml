@@ -23,3 +23,8 @@ build-backend = "uv_build"
 pythonpath = [
   "./src/config_driven_pyspark"
 ]
+
+[dependency-groups]
+dev = [
+    "pylint>=3.3.8",
+]

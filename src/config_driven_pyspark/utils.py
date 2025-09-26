@@ -1,8 +1,15 @@
-from typing import Any, Callable, Iterable
+"""utility functions"""
+
 from pyspark.sql import DataFrame
 
 
-def flatten_schema(df: DataFrame):
+def flatten_schema(df: DataFrame) -> list[str]:
+    """
+    Flatten a dataframe schema.
+    Returns a list of strings.
+    Array type fields are denoted by [].
+    """
+
     def flatten_struct(struct, prefix=""):
         result = []
 
@@ -21,26 +28,4 @@ def flatten_schema(df: DataFrame):
                     result.append(field_name)
         return result
 
-    flat = flatten_struct(df.schema.jsonValue())
-    return flat
-
-
-def limit_depth(field: str, depth=-1):
-    """
-    limit a nested field path to `depth`
-    depth = -1 means return up to the final parent
-    """
-
-    split = field.split(".")
-
-    if depth == -1:
-        depth = len(split) - 1
-
-    return ".".join(field.split(".")[:depth])
-
-
-def find_first(l: Iterable, predicate: Callable[[Any], bool]):
-    for i, x in enumerate(l):
-        if predicate(x):
-            return x, i
-    raise ValueError("No element found")
+    return flatten_struct(df.schema.jsonValue())
