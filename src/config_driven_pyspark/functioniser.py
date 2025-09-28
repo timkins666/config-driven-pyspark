@@ -1,6 +1,7 @@
 """A handy thing to apply functions to nested data"""
 
 from collections import UserDict
+import inspect
 import logging
 from typing import Callable
 from pyspark.sql import Column, DataFrame, functions as F
@@ -14,17 +15,32 @@ _logger = logging.getLogger(__name__)
 class Functioniser:
     """Applies functions to fields in the dataframe"""
 
+    _spark_fns: dict[str, Column | DfFunction] = {
+        f[0]: f[1]
+        for f in inspect.getmembers(F, inspect.isfunction)
+        if not f[0].startswith("_")
+    }
+
     def __init__(self):
         self.reset()
+        self._custom_functions: dict[str, Column | DfFunction] = {}
 
     def reset(self) -> None:
         """Reset to start afresh to run with a new DataFrame"""
         self.functions: dict[str, DfFunction] = {}
         self.flat_schema: list[str] = []
 
-    def add(self, field: str, function: Column | DfFunction) -> "Functioniser":
+    def add(self, field: str, function: str | Column | DfFunction) -> "Functioniser":
         """Add a function to be applied to the DataFrame"""
         field = field.lower()
+
+        if isinstance(function, str):
+            if function in self._custom_functions:
+                function = self._custom_functions[function]
+            elif function in self._spark_fns:
+                function = self._spark_fns[function]
+            else:
+                raise ValueError(f"Function {function} not found")
 
         fn: DfFunction = (
             (lambda _: function) if isinstance(function, Column) else function
@@ -81,6 +97,7 @@ class Functioniser:
 
     def _create_array_transform(self, member: str, node: "NodeFunctions"):
         """Create array transform function with closure"""
+
         def transform_fn(element):
             return element.withField(
                 member,
@@ -89,6 +106,7 @@ class Functioniser:
                     node[member],
                 ),
             )
+
         return transform_fn
 
     def _build_nodes(self):
@@ -119,6 +137,17 @@ class Functioniser:
                 current = current[member_clean]
             current.node_function = self.functions[field]
         return root_map
+
+    def register_function(
+        self, name: str, func: Column | Callable[[Column], Column]
+    ) -> None:
+        """
+        Register a custom function to use by name.
+        Can be used to override default Spark functions.
+        """
+        if not (isinstance(func, Column) or callable(func)):
+            raise ValueError(f"Function {name} must be a Column or callable")
+        self._custom_functions[name] = func
 
 
 class NodeFunctions(UserDict[str, "NodeFunctions"]):

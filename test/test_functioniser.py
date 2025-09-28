@@ -258,3 +258,71 @@ class TestMechanics:
 
         result = result.collect()
         assert result[0].id == "x"
+
+
+class TestStringConfigs:
+    def test_spark_builtins(self, spark: SparkSession):
+        """check a few builtins are available"""
+        runner = Functioniser()
+
+        assert "lower" in runner._spark_fns
+        assert "upper" in runner._spark_fns
+        assert "trim" in runner._spark_fns
+
+        result = (
+            to_df(spark, {"a": "aA", "b": "bB", "c": "  cC  "})
+            .select(
+                runner._spark_fns["lower"]("a"),
+                runner._spark_fns["upper"]("b"),
+                runner._spark_fns["trim"]("c"),
+            )
+            .collect()
+        )
+
+        assert result[0] == ("aa", "BB", "cC")
+
+    def test_custom_function(self, spark: SparkSession):
+        runner = Functioniser()
+
+        runner.register_function("foo", lambda _: F.lit("bar"))
+        runner.add("a", "foo")
+
+        result = runner.apply(to_df(spark, {"a": "a"}))
+
+        assert result.collect()[0].a == "bar"
+
+    def test_custom_function_override_builtin(self, spark: SparkSession):
+        runner = Functioniser()
+
+        runner.register_function("trim", lambda _: F.lit("TRIMMED"))
+        runner.add("a", "trim")
+
+        result = runner.apply(to_df(spark, {"a": "a"}))
+
+        assert result.collect()[0].a == "TRIMMED"
+
+    def test_not_found(self):
+        runner = Functioniser()
+
+        with pytest.raises(ValueError, match="foo"):
+            runner.add("a", "foo")
+
+class TestConfigDriven:
+    def test_with_config(self, spark: SparkSession):
+        df = to_df(spark, {"a": "aA", "b": "bB", "c": " cC "})
+
+        config ={
+            "a": "upper",
+            "b": "lower",
+            "c": "trim",
+        }
+
+        runner = Functioniser()
+        for f, fn in config.items():
+            runner.add(f, fn)
+
+        result = runner.apply(df).collect()[0]
+        
+        assert result.a == "AA"
+        assert result.b == "bb"
+        assert result.c == "cC"
