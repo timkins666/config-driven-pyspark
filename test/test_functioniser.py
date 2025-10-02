@@ -1,6 +1,7 @@
 from pyspark.sql import SparkSession, functions as F
 import pytest
 from unittest import mock
+import yaml
 
 from functioniser import Functioniser
 from test.conftest import to_df
@@ -261,8 +262,8 @@ class TestMechanics:
 
 
 class TestStringConfigs:
-    def test_spark_builtins(self, spark: SparkSession):
-        """check a few builtins are available"""
+    def test_spark_builtins_in_internal(self, spark: SparkSession):
+        """check a few builtins are found"""
         runner = Functioniser()
 
         assert "lower" in runner._spark_fns
@@ -272,14 +273,24 @@ class TestStringConfigs:
         result = (
             to_df(spark, {"a": "aA", "b": "bB", "c": "  cC  "})
             .select(
-                runner._spark_fns["lower"]("a"),
-                runner._spark_fns["upper"]("b"),
-                runner._spark_fns["trim"]("c"),
+                runner._spark_fns["lower"]("a"),  # type: ignore
+                runner._spark_fns["upper"]("b"),  # type: ignore
+                runner._spark_fns["trim"]("c"),  # type: ignore
             )
             .collect()
         )
 
         assert result[0] == ("aa", "BB", "cC")
+
+    def test_spark_builtins_by_name(self, spark: SparkSession):
+        """check a few builtins are usable by name"""
+        runner = Functioniser().add("a", "lower").add("b", "upper").add("c", "trim")
+
+        df = to_df(spark, {"a": "aA", "b": "bB", "c": "  cC  "})
+
+        result = runner.apply(df)
+
+        assert result.collect()[0] == ("aa", "BB", "cC")
 
     def test_custom_function(self, spark: SparkSession):
         runner = Functioniser()
@@ -307,11 +318,12 @@ class TestStringConfigs:
         with pytest.raises(ValueError, match="foo"):
             runner.add("a", "foo")
 
+
 class TestConfigDriven:
     def test_with_config(self, spark: SparkSession):
         df = to_df(spark, {"a": "aA", "b": "bB", "c": " cC "})
 
-        config ={
+        config = {
             "a": "upper",
             "b": "lower",
             "c": "trim",
@@ -322,7 +334,80 @@ class TestConfigDriven:
             runner.add(f, fn)
 
         result = runner.apply(df).collect()[0]
-        
+
         assert result.a == "AA"
         assert result.b == "bb"
         assert result.c == "cC"
+
+
+class TestReadme:
+    """Sanity check code in the readme"""
+
+    def test_setup(self, spark):
+        df = to_df(
+            spark,
+            {
+                "some_root": "a/b/c",
+                "another_root": {
+                    "nested_field": "baz",
+                    "another_nested_field": "abbage",
+                },
+            },
+        )
+
+        runner = (
+            Functioniser()
+            .add("some_root", "upper")
+            .add("another_root.nested_field", F.lit("foo"))
+            .add(
+                "another_root.another_nested_field",
+                lambda col: F.concat(
+                    F.split_part("some_root", F.lit("/"), F.lit(3)), col
+                ),
+            )
+        )
+
+        result = runner.apply(df).collect()
+
+        assert result[0].asDict(True) == {
+            "some_root": "A/B/C",
+            "another_root": {
+                "nested_field": "foo",
+                "another_nested_field": "cabbage",
+            },
+        }
+
+    def test_custom(self, spark: SparkSession):
+        df = to_df(
+            spark,
+            {
+                "my_root": {
+                    "field_a": "  trim me  ",
+                    "field_b": "123456",
+                    "field_c": ["", "x"],
+                }
+            },
+        )
+
+        parsed_yaml = yaml.safe_load(
+            """
+            functions:
+              my_root.field_a: trim
+              my_root.field_b: substr_first_four
+              my_root.field_c: set_to_foo
+        """
+        )
+
+        runner = Functioniser()
+
+        runner.register_function(
+            "substr_first_four", lambda col: F.substring(col, 0, 4)
+        )
+        runner.register_function("set_to_foo", F.lit("foo"))
+
+        for field, fn in parsed_yaml["functions"].items():
+            runner.add(field, fn)
+
+        result = runner.apply(df).collect()
+
+        assert result[0].my_root == ("trim me", "1234", ["foo", "foo"])
