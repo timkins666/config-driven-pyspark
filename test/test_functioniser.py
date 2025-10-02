@@ -89,6 +89,23 @@ class TestRootColumns:
         assert [r.lastname for r in result] == ["lee", "margolyes"]
         assert [r.unchanged for r in result] == ["yes", "yes"]
 
+    def test_create_new_root_field(self, spark: SparkSession):
+        df = self._source_data(spark)
+
+        runner = Functioniser()
+
+        runner.add("newroot1", F.lit("yippee!"))
+        runner.add("newroot2", F.concat("firstname", F.lit(" "), "lastname"))
+
+        result = runner.apply(df).orderBy("id")
+
+        # ensure new columns added after existing
+        assert result.columns == df.columns + ["newroot1", "newroot2"]
+
+        rows = result.select("newroot1", "newroot2").collect()
+        assert rows[0] == ("yippee!", "Christopher Lee")
+        assert rows[1] == ("yippee!", "Miriam Margolyes")
+
     def test_array(self, spark: SparkSession):
         df = self._source_data(spark)
 
@@ -118,7 +135,11 @@ class TestNested:
                 },
                 "hoomans": [
                     {
-                        "address": ["house", "street"],
+                        "names": ["Jack", "Jill"],
+                        "address": {
+                            "house": 23,
+                            "street": "A Nice Street",
+                        },
                     }
                 ],
             },
@@ -168,13 +189,36 @@ class TestNested:
         runner = Functioniser()
 
         runner.add(
-            "hoomans.address",
-            lambda val: F.when(val == "street", F.upper(val)).otherwise(val),
+            "hoomans.names",
+            lambda val: F.when(val == "Jack", F.upper(val)).otherwise(val),
         )
 
         result = runner.apply(df).collect()
 
-        assert result[0].hoomans[0].address == ["house", "STREET"]
+        assert result[0].hoomans[0].names == ["JACK", "Jill"]
+
+    def test_create_new_nested_field(self, spark: SparkSession):
+        df = self._source_data(spark)
+
+        runner = Functioniser()
+
+        runner.add("newroot1", F.lit("yippee!"))
+        runner.add("pets.pet_details.foo", F.lit("bar!"))
+        runner.add("hoomans.address.city", F.lit("baz!"))
+
+        result = runner.apply(df)
+
+        assert len(result.columns) == len(df.columns) + 1
+
+        rows = result.collect()
+        for row in rows:
+            assert row.newroot1 == "yippee!"
+            assert row.pets.pet_details[0].foo == "bar!"
+            assert row.hoomans[0].address.asDict() == {
+                "house": 23,
+                "street": "A Nice Street",
+                "city": "baz!",
+            }
 
 
 class TestMechanics:
@@ -256,9 +300,22 @@ class TestMechanics:
             result = runner.apply(df)
 
         assert field in caplog.text
+        assert "iD" not in caplog.text
 
         result = result.collect()
         assert result[0].id == "x"
+
+    def test_error_for_parent_struct_not_present(self, spark: SparkSession):
+        df = self._source_data(spark)
+
+        runner = Functioniser()
+
+        runner.add("nested.schmested.a.b.c", F.lit("ain't there, buddy"))
+
+        with pytest.raises(
+            ValueError, match="Parent struct for nested.schmested.a.b.c not found"
+        ):
+            runner.apply(df)
 
 
 class TestStringConfigs:

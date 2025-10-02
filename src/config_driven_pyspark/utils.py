@@ -29,3 +29,20 @@ def flatten_schema(df: DataFrame) -> list[str]:
         return result
 
     return flatten_struct(df.schema.jsonValue())
+
+
+def limit_depth(field: str, depth: int | str = -1):
+    """
+    Limit a nested field path to `depth`.
+    `depth = -1` means return up to the final parent.
+    If `depth` is a string, will limit `field`'s depth to match.
+    """
+
+    split = field.split(".")
+
+    if depth == -1:
+        depth = len(split) - 1
+    elif isinstance(depth, str):
+        depth = depth.count(".") + 1
+
+    return ".".join(field.split(".")[:depth])

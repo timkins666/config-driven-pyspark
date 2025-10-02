@@ -93,6 +93,10 @@ If you `select` nested fields from a dataframe, the result is a flat dataframe w
 
 The alternative is to apply the `pyspark.sql.functions.drop` function to structs to prune the fields you don't want, which maintains the original structure. There are some shenanigans involved in determining where and what to drop, but the results can be hooked up using the `Functioniser.add` method.
 
-### Case senitivity
+### Case sensitivity
 
 It operates case-insensitively so that the casing of config files doesn't have to match that of the dataframe. This can, of course, be adapted if you need it.
+
+### Creating new fields
+
+You can use `add/apply` to create new fields, but only as root columns or adding members to existing structs (at any depth, and including structs in arrays) - you can't just magically create multiple levels of nesting. If you want to add levels of new nested structure you'll need to create a function that creates all the struct types and attaches that to an existing level.

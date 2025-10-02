@@ -5,6 +5,7 @@ import inspect
 import logging
 from typing import Callable
 from pyspark.sql import Column, DataFrame, functions as F
+from pyspark.errors import AnalysisException
 import utils
 
 type DfFunction = Callable[[Column], Column]
@@ -59,12 +60,28 @@ class Functioniser:
         self.flat_schema = utils.flatten_schema(df)
         node_map = self._build_nodes()
 
-        return df.select(
-            *[
-                self._apply(F.col(root_col), node_map.iget(root_col)).alias(root_col)
-                for root_col in df.columns
-            ]
+        existing_roots = [c.lower() for c in df.columns]
+
+        # get list of roots including any to create,
+        # preserving current order and adding new ones
+        # sorted alphabetically at the end
+        root_cols = df.columns + sorted(
+            {c for c in node_map if c.lower() not in existing_roots}
         )
+
+        select_cols: list[Column] = []
+        for root_col in root_cols:
+            try:
+                root_ctx = F.col(root_col)
+            except AnalysisException:
+                # adding a new root
+                root_ctx = F.lit("dummy, not used but keeps typing happy")
+
+            select_cols.append(
+                self._apply(root_ctx, node_map.iget(root_col)).alias(root_col)
+            )
+
+        return df.select(*select_cols)
 
     def _apply(self, ctx: Column, node: "NodeFunctions | None"):
         """
@@ -74,12 +91,6 @@ class Functioniser:
         # no configs for this root, just return
         if node is None:
             return ctx
-
-        # apply function to current ctx
-        if node.node_function:
-            if node.is_array:
-                return F.transform(ctx, node.node_function)
-            return node.node_function(ctx)
 
         for member in node:
             if node.is_array:
@@ -92,6 +103,13 @@ class Functioniser:
                         node[member],
                     ),
                 )
+
+        # apply functions to current ctx
+        if node.node_function:
+            if node.is_array:
+                ctx = F.transform(ctx, node.node_function)
+            else:
+                ctx = node.node_function(ctx)
 
         return ctx
 
@@ -109,21 +127,60 @@ class Functioniser:
 
         return transform_fn
 
+    def _get_field_name_with_tokens(self, field: str) -> str | None:
+        """
+        Get flattened field name with array tokens, e.g. `a.b[].c`.
+        Supports partial structure matches, e.g. will return `a.b[].c` if `c` is a struct.
+        """
+        tokenised = next(
+            (
+                f
+                for f in self.flat_schema
+                if f.lower().replace("[]", "") == field.lower()
+                or f.lower().replace("[]", "").startswith(field.lower() + ".")
+            ),
+            None,
+        )
+
+        if tokenised:
+            # limit path depth of found field to match input field
+            tokenised = utils.limit_depth(tokenised, field)
+
+        return tokenised
+        
+
     def _build_nodes(self):
+        """
+        Get structure representing nesting levels, struct members
+        and functions to apply.
+        """
+
         root_map = NodeFunctions("root")
 
         for field, function in self.functions.items():
             current = root_map
 
-            try:
-                field_with_tokens = next(
-                    f
-                    for f in self.flat_schema
-                    if f.lower().replace("[]", "") == field.lower()
+            field_with_tokens = self._get_field_name_with_tokens(field)
+            if field_with_tokens is None:
+                _logger.warning(
+                    "Field %s not found in input schema. "
+                    "Will attempt to create on parent.",
+                    field,
                 )
-            except StopIteration:
-                _logger.warning("Field %s not found in schema", field)
-                continue
+
+                if "." not in field:
+                    # creating new root, this is fine
+                    field_with_tokens = field
+                else:
+                    # try get parent struct, we can add a new field if the parent exists
+                    parent = self._get_field_name_with_tokens(field.rsplit(".", 1)[0])
+
+                    if not parent:
+                        raise ValueError(
+                            f"Parent struct for {field} not found in input schema"
+                        )
+
+                    field_with_tokens = f"{parent}.{field.rsplit(".", 1)[1]}"
 
             split = field_with_tokens.split(".")
             for i, member in enumerate(split):
