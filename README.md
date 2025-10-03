@@ -85,6 +85,14 @@ If the context is an array, it uses `transform` to operate on each element of th
 
 If the context is the leaf field we're applying functions to, it returns the configured Spark function called with context as the `Column` parameter.
 
+## Design notes
+
+A few notes on design choices:
+
+You can traverse the schema at `_apply` time and look for arrays and matching paths rather than going down the plan route (building the map of `NodeFunctions`), but it can be helpful for debugging to see what it wants to do beforehand, and the plan also means it only interacts with parent structs on the way to fields it will be applying functions to; the rest of the schema remains out of the query plan. The same applies to using the flattened string schema; it could use the dataframe's schema object dirctly but having a concrete list of fields you can look at can aid in debugging. I might switch it over to compare...
+
+At the moment it creates a `.withField` for every struct level, when if there are no other changes to make to through a series of parent structs, they can be grouped e.g. `.withField("a.b.c")`. This may provide a slight performance benefit.
+
 ## Extending it
 
 ### Nested data select function
